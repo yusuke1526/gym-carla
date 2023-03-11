@@ -50,6 +50,8 @@ class CarlaEnv(gym.Env):
       self.pixor_size = params['pixor_size']
     else:
       self.pixor = False
+    if params.get('eval'):
+      random.seed(params['seed'])
 
     # Destination
     if params['task_mode'] == 'roundabout':
