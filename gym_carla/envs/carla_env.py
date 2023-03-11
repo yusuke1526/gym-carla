@@ -24,6 +24,12 @@ from gym_carla.envs.route_planner import RoutePlanner
 from gym_carla.envs.misc import *
 
 
+def fix_seed(seed):
+    # random
+    random.seed(seed)
+    # Numpy
+    np.random.seed(seed)
+
 class CarlaEnv(gym.Env):
   """An OpenAI gym wrapper for CARLA simulator."""
 
@@ -51,7 +57,7 @@ class CarlaEnv(gym.Env):
     else:
       self.pixor = False
     if params.get('eval'):
-      random.seed(params['seed'])
+      fix_seed(params['seed'])
 
     # Destination
     if params['task_mode'] == 'roundabout':
