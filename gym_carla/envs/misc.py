@@ -15,6 +15,11 @@ import carla
 import pygame
 from matplotlib.path import Path
 import skimage
+import pickle
+import os
+from typing import List, Optional
+from carla.libcarla import Transform, Location, Rotation, ActorBlueprint
+import matplotlib.pyplot as plt
 
 
 def get_speed(vehicle):
@@ -249,3 +254,80 @@ def rgb_to_display_surface(rgb, display_size):
   pygame.surfarray.blit_array(surface, display)
   return surface
 
+def load_pickle_file(file_path):
+  try:
+    with open(file_path, 'rb') as f:
+      obj = pickle.load(f)
+    print(f'loaded {file_path}')
+  except FileNotFoundError:
+    obj = None
+  return obj
+
+def dump_pickle_file(obj, file_path):
+  dir_path = '/'.join(file_path.split('/')[:-1])
+  if not os.path.exists(dir_path):
+    os.makedirs(dir_path)
+  
+  if os.path.exists(file_path):
+    print(f'{file_path} exists')
+  else:
+    with open(file_path, 'wb') as f:
+      pickle.dump(obj, f)
+    print(f'dumped {file_path}')
+
+def load_carla_object(file_path, convert_func):
+  carla_object_dicts = load_pickle_file(file_path)
+  if carla_object_dicts is not None:
+    carla_objects = convert_func(carla_object_dicts)
+  else:
+    carla_objects = None
+  return carla_objects
+
+def dump_carla_objects(carla_objects, file_path, convert_func):
+  carla_object_dicts = convert_func(carla_objects)
+  carla_object_dicts = dump_pickle_file(carla_object_dicts, file_path)
+
+def load_transforms(file_path) -> Optional[List[Transform]]:
+  return load_carla_object(file_path, convert_dicts_to_transforms)
+
+def dump_transforms(transforms, file_path):
+  dump_carla_objects(transforms, file_path, convert_transforms_to_dicts)
+
+def load_blueprints(file_path) -> Optional[List[ActorBlueprint]]:
+  return load_carla_object(file_path, convert_dicts_to_blueprints)
+
+def dump_blueprints(blueprints, file_path):
+  dump_carla_objects(blueprints, file_path, convert_blueprints_to_dicts)
+
+def convert_transforms_to_dicts(transforms: List[Transform]) -> List[dict]:
+  locations = list(map(lambda x: {'x': x.location.x, 'y': x.location.y, 'z': x.location.z}, transforms))
+  rotations = list(map(lambda x: {'pitch': x.rotation.pitch, 'yaw': x.rotation.yaw, 'roll': x.rotation.roll}, transforms))
+  transform_dicts = [{'location': l, 'rotation': r} for l, r in zip(locations, rotations)]
+  return transform_dicts
+
+def convert_dicts_to_transforms(transform_dicts: List[dict]) -> List[Transform]:
+  locations = list(map(lambda x: Location(**x['location']), transform_dicts))
+  rotations = list(map(lambda x: Rotation(**x['rotation']), transform_dicts))
+  transforms = [Transform(location=l, rotation=r) for l, r in zip(locations, rotations)]
+  return transforms
+
+def convert_blueprints_to_dicts(blueprints: List[ActorBlueprint]) -> List[dict]:
+  blueprint_dicts = list(map(lambda x: {'id': x.id, 'tags': x.tags}, blueprints))
+  return blueprint_dicts
+
+def convert_dicts_to_blueprints(blueprint_dicts: List[dict]) -> List[ActorBlueprint]:
+  for blueprint_dict in blueprint_dicts:
+    blueprint = ActorBlueprint()
+    blueprint.set_attribute(id=blueprint_dict['id'])
+  blueprints = list(map(lambda x: ActorBlueprint(**x), blueprint_dicts))
+  return blueprints
+
+def plot_transforms(transforms):
+  if type(transforms[0])==dict:
+    x = list(map(lambda x: x['location']['x'], transforms))
+    y = list(map(lambda x: x['location']['y'], transforms))
+  if type(transforms[0])==Transform:
+    x = list(map(lambda x: x.location.x, transforms))
+    y = list(map(lambda x: x.location.y, transforms))
+  plt.scatter(x, y)
+  plt.show()
