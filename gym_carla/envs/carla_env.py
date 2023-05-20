@@ -7,6 +7,7 @@
 
 from __future__ import division
 
+import sys
 import copy
 import numpy as np
 import pygame
@@ -22,7 +23,6 @@ import carla
 from gym_carla.envs.render import BirdeyeRender
 from gym_carla.envs.route_planner import RoutePlanner
 from gym_carla.envs.misc import *
-
 
 class CarlaEnv(gym.Env):
   """An OpenAI gym wrapper for CARLA simulator."""
@@ -50,6 +50,11 @@ class CarlaEnv(gym.Env):
       self.pixor_size = params['pixor_size']
     else:
       self.pixor = False
+    self.eval = params.get('eval')
+    if self.eval:
+      self.reset_num = 0
+      self.transforms_path = f'./logs_eval/carla-v0/transforms/{params["town"]}'
+      sys.setrecursionlimit(500)
 
     # Destination
     if params['task_mode'] == 'roundabout':
@@ -86,7 +91,7 @@ class CarlaEnv(gym.Env):
     # Connect to carla server and get world object
     print('connecting to Carla server...')
     client = carla.Client('localhost', params['port'])
-    client.set_timeout(10.0)
+    client.set_timeout(5.0)
     self.world = client.load_world(params['town'])
     print('Carla server connected!')
 
@@ -95,6 +100,7 @@ class CarlaEnv(gym.Env):
 
     # Get spawn points
     self.vehicle_spawn_points = list(self.world.get_map().get_spawn_points())
+    if self.eval: self.number_of_vehicles = int(len(self.vehicle_spawn_points) * 0.8)
     self.walker_spawn_points = []
     for i in range(self.number_of_walkers):
       spawn_point = carla.Transform()
@@ -104,6 +110,9 @@ class CarlaEnv(gym.Env):
         self.walker_spawn_points.append(spawn_point)
 
     # Create the ego vehicle blueprint
+    self.bp_idxs = None
+    self.bp_idxs_ = []
+    self.blueprints = dict()
     self.ego_bp = self._create_vehicle_bluepprint(params['ego_vehicle_filter'], color='49,8,8')
 
     # Collision sensor
@@ -148,6 +157,12 @@ class CarlaEnv(gym.Env):
       self.pixel_grid = np.vstack((x, y)).T
 
   def reset(self):
+    if self.eval:
+      self.reset_num += 1
+      # reset_limit = 1
+      # if self.reset_num > reset_limit:
+      #   raise RuntimeError(f'Recursive call count exceeds {reset_limit}')
+
     # Clear sensor objects  
     self.collision_sensor = None
     self.lidar_sensor = None
@@ -156,21 +171,25 @@ class CarlaEnv(gym.Env):
     # Delete sensors, vehicles and walkers
     self._clear_all_actors(['sensor.other.collision', 'sensor.lidar.ray_cast', 'sensor.camera.rgb', 'vehicle.*', 'controller.ai.walker', 'walker.*'])
 
-    # Disable sync mode
-    self._set_synchronous_mode(False)
+    # Enable/Disabe sync mode
+    self._set_synchronous_mode(self.eval is True)
 
     # Spawn surrounding vehicles
-    random.shuffle(self.vehicle_spawn_points)
-    count = self.number_of_vehicles
-    if count > 0:
-      for spawn_point in self.vehicle_spawn_points:
-        if self._try_spawn_random_vehicle_at(spawn_point, number_of_wheels=[4]):
-          count -= 1
-        if count <= 0:
-          break
-    while count > 0:
-      if self._try_spawn_random_vehicle_at(random.choice(self.vehicle_spawn_points), number_of_wheels=[4]):
-        count -= 1
+    self.vehicle_spawn_points = list(self.world.get_map().get_spawn_points())
+    if self.eval:
+      self.bp_idxs = load_pickle_file(f'{self.transforms_path}/{self.reset_num:02}_bp_idxs.pkl')
+      self.bp_idxs_ = []
+      self.spawned_points = load_transforms(f'{self.transforms_path}/{self.reset_num:02}_spawned_points.pkl')
+      if self.spawned_points is None:
+        self._spawn_surrounding_vehicles()
+        dump_transforms(self.spawned_points, f'{self.transforms_path}/{self.reset_num:02}_spawned_points.pkl')
+        dump_pickle_file(self.bp_idxs_, f'{self.transforms_path}/{self.reset_num:02}_bp_idxs.pkl')
+      else:
+        for spawn_point in self.spawned_points:
+          if not self._try_spawn_random_vehicle_at(spawn_point, number_of_wheels=[4]):
+            print('spawn failed')
+    else:
+      self._spawn_surrounding_vehicles()
 
     # Spawn pedestrians
     random.shuffle(self.walker_spawn_points)
@@ -194,23 +213,21 @@ class CarlaEnv(gym.Env):
     self.walker_polygons.append(walker_poly_dict)
 
     # Spawn the ego vehicle
-    ego_spawn_times = 0
-    while True:
-      if ego_spawn_times > self.max_ego_spawn_times:
-        self.reset()
-
-      if self.task_mode == 'random':
-        transform = random.choice(self.vehicle_spawn_points)
-      if self.task_mode == 'roundabout':
-        self.start=[52.1+np.random.uniform(-5,5),-4.2, 178.66] # random
-        # self.start=[52.1,-4.2, 178.66] # static
-        transform = set_carla_transform(self.start)
-      if self._try_spawn_ego_vehicle_at(transform):
-        break
+    if self.eval:
+      transform = load_transforms(f'{self.transforms_path}/{self.reset_num:02}_ego_transform.pkl')
+      if transform is None:
+        self._spawn_ego_vehicle()
+        dump_transforms([self.ego_transform], f'{self.transforms_path}/{self.reset_num:02}_ego_transform.pkl')
       else:
-        ego_spawn_times += 1
-        time.sleep(0.1)
+        transform = transform[0]
+        if not self._try_spawn_ego_vehicle_at(transform, saved_transform=True):
+          print('ego spawn failed')
+    else:
+      self._spawn_ego_vehicle()
 
+    # Disable sync mode
+    self._set_synchronous_mode(False)
+      
     # Add collision sensor
     self.collision_sensor = self.world.spawn_actor(self.collision_bp, carla.Transform(), attach_to=self.ego)
     self.collision_sensor.listen(lambda event: get_collision_hist(event))
@@ -254,6 +271,43 @@ class CarlaEnv(gym.Env):
 
     return self._get_obs()
   
+  def _spawn_surrounding_vehicles(self):
+    self.spawned_points = []
+    random.shuffle(self.vehicle_spawn_points)
+    count = self.number_of_vehicles
+    while count > 0 and len(self.vehicle_spawn_points) > 0:
+      spawn_point = self.vehicle_spawn_points.pop()
+      if self._try_spawn_random_vehicle_at(spawn_point, number_of_wheels=[4]):
+        count -= 1
+        self.spawned_points.append(spawn_point)
+    print(f'spawned {self.number_of_vehicles - count} vehicles')
+
+  def _spawn_ego_vehicle(self):
+    ego_spawn_times = 0
+    while True:
+      if ego_spawn_times > self.max_ego_spawn_times:
+        print(f'ego_spawn_times exceeds max_ego_spawn_times.')
+        self.reset()
+      
+      if len(self.vehicle_spawn_points) == 0:
+        raise RuntimeError("cannot spawn ego vehicle")
+
+      if self.task_mode == 'random':
+        transform = random.choice(self.vehicle_spawn_points)
+      if self.task_mode == 'roundabout':
+        self.start=[52.1+np.random.uniform(-5,5),-4.2, 178.66] # random
+        # self.start=[52.1,-4.2, 178.66] # static
+        transform = set_carla_transform(self.start)
+      if self._try_spawn_ego_vehicle_at(transform):
+        self.ego_transform = transform
+        break
+      else:
+        ego_spawn_times += 1
+        time.sleep(0.1)
+        self.vehicle_spawn_points.remove(transform)
+        print(len(self.vehicle_spawn_points))
+
+  
   def step(self, action):
     # Calculate acceleration and steering
     if self.discrete:
@@ -271,7 +325,7 @@ class CarlaEnv(gym.Env):
       throttle = 0
       brake = np.clip(-acc/8,0,1)
 
-    # Apply control
+    # Apply control ここでautopilotの上書きを止めれそう！？
     act = carla.VehicleControl(throttle=float(throttle), steer=float(-steer), brake=float(brake))
     self.ego.apply_control(act)
 
@@ -318,15 +372,23 @@ class CarlaEnv(gym.Env):
     Returns:
       bp: the blueprint object of carla.
     """
-    blueprints = self.world.get_blueprint_library().filter(actor_filter)
+    blueprints = self.blueprints.get(actor_filter)
+    if blueprints is None:
+      blueprints = self.world.get_blueprint_library().filter(actor_filter)
+      self.blueprints[actor_filter] = blueprints
     blueprint_library = []
     for nw in number_of_wheels:
       blueprint_library = blueprint_library + [x for x in blueprints if int(x.get_attribute('number_of_wheels')) == nw]
-    bp = random.choice(blueprint_library)
+    if self.eval and self.bp_idxs:
+      bp_idx = self.bp_idxs.pop(0)
+    else:
+      bp_idx = random.randint(0, len(blueprint_library)-1)
+    bp = blueprint_library[bp_idx]
     if bp.has_attribute('color'):
       if not color:
         color = random.choice(bp.get_attribute('color').recommended_values)
       bp.set_attribute('color', color)
+    self.bp_idxs_.append(bp_idx)
     return bp
 
   def _init_renderer(self):
@@ -367,6 +429,7 @@ class CarlaEnv(gym.Env):
     if vehicle is not None:
       vehicle.set_autopilot()
       return True
+    self.bp_idxs_.pop()
     return False
 
   def _try_spawn_random_walker_at(self, transform):
@@ -396,25 +459,45 @@ class CarlaEnv(gym.Env):
       return True
     return False
 
-  def _try_spawn_ego_vehicle_at(self, transform):
+  def _try_spawn_ego_vehicle_at(self, transform, saved_transform=False):
     """Try to spawn the ego vehicle at specific transform.
     Args:
       transform: the carla transform object.
     Returns:
       Bool indicating whether the spawn is successful.
     """
+    def plot_surround_ego_vehicles(poly_centers, ego_center):
+      print(poly_centers.shape)
+      fig = plt.figure(figsize=(8, 4))
+
+      ax1 = fig.add_subplot(1, 2, 1)
+      ax1.scatter(poly_centers[:, 0], poly_centers[:, 1], c='b')
+      ax1.scatter(ego_center[0], ego_center[1], c='r')
+
+      x = list(map(lambda x: x.location.x, self.spawned_points))
+      y = list(map(lambda x: x.location.y, self.spawned_points))
+      ax2 = fig.add_subplot(1, 2, 2)
+      ax2.scatter(x, y, c='b')
+      ax2.scatter(ego_center[0], ego_center[1], c='r')
+
+      plt.show()
+
     vehicle = None
     # Check if ego position overlaps with surrounding vehicles
     overlap = False
-    for idx, poly in self.vehicle_polygons[-1].items():
-      poly_center = np.mean(poly, axis=0)
-      ego_center = np.array([transform.location.x, transform.location.y])
-      dis = np.linalg.norm(poly_center - ego_center)
-      if dis > 8:
-        continue
-      else:
-        overlap = True
-        break
+    poly_centers = []
+    ego_center = np.array([transform.location.x, transform.location.y])
+    if not saved_transform:
+      for idx, poly in self.vehicle_polygons[-1].items():
+        poly_center = np.mean(poly, axis=0)
+        poly_centers.append(poly_center)
+        dis = np.linalg.norm(poly_center - ego_center)
+        if dis > 8:
+          continue
+        else:
+          overlap = True
+          print('ego overlapped!')
+          break
 
     if not overlap:
       vehicle = self.world.try_spawn_actor(self.ego_bp, transform)
@@ -422,6 +505,8 @@ class CarlaEnv(gym.Env):
     if vehicle is not None:
       self.ego=vehicle
       return True
+    else:
+      print('ego spawn failed for any reason')
       
     return False
 
