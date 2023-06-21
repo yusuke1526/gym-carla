@@ -55,6 +55,9 @@ class CarlaEnv(gym.Env):
       self.reset_num = 0
       self.transforms_path = f'./logs_eval/carla-v0/transforms/{params["town"]}'
       sys.setrecursionlimit(500)
+    self.auto_exploration = params['auto_exploration']
+    if self.auto_exploration:
+      self.ego = None
 
     # Destination
     if params['task_mode'] == 'roundabout':
@@ -316,7 +319,7 @@ class CarlaEnv(gym.Env):
     else:
       acc = action[0]
       steer = action[1]
-
+    print(action)
     # Convert acceleration to throttle and brake
     if acc > 0:
       throttle = np.clip(acc/3,0,1)
@@ -467,7 +470,6 @@ class CarlaEnv(gym.Env):
       Bool indicating whether the spawn is successful.
     """
     def plot_surround_ego_vehicles(poly_centers, ego_center):
-      print(poly_centers.shape)
       fig = plt.figure(figsize=(8, 4))
 
       ax1 = fig.add_subplot(1, 2, 1)
@@ -504,6 +506,8 @@ class CarlaEnv(gym.Env):
 
     if vehicle is not None:
       self.ego=vehicle
+      if self.auto_exploration:
+        self.ego.set_autopilot()
       return True
     else:
       print('ego spawn failed for any reason')
