@@ -13,6 +13,7 @@ import numpy as np
 import pygame
 import random
 import time
+from collections import namedtuple
 from skimage.transform import resize
 
 import gym
@@ -58,6 +59,9 @@ class CarlaEnv(gym.Env):
     self.auto_exploration = params['auto_exploration']
     if self.auto_exploration:
       self.ego = None
+    self.acc_coef = params.get('acc_coef', 1.0)
+    self.steer_coef = params.get('steer_coef', 1.0)
+    self._host_name = params.get('host_name', 'localhost')
 
     # Destination
     if params['task_mode'] == 'roundabout':
@@ -93,8 +97,8 @@ class CarlaEnv(gym.Env):
 
     # Connect to carla server and get world object
     print('connecting to Carla server...')
-    client = carla.Client('localhost', params['port'])
-    client.set_timeout(5.0)
+    client = carla.Client(self._host_name, params['port'])
+    client.set_timeout(100.0)
     self.world = client.load_world(params['town'])
     print('Carla server connected!')
 
@@ -317,20 +321,27 @@ class CarlaEnv(gym.Env):
       acc = self.discrete_act[0][action//self.n_steer]
       steer = self.discrete_act[1][action%self.n_steer]
     else:
-      acc = action[0]
-      steer = action[1]
-    print(action)
+      acc = action[0] * self.acc_coef
+      steer = action[1] * self.steer_coef
+
     # Convert acceleration to throttle and brake
     if acc > 0:
-      throttle = np.clip(acc/3,0,1)
+      throttle = np.clip(acc,0,1)
       brake = 0
     else:
       throttle = 0
-      brake = np.clip(-acc/8,0,1)
+      brake = np.clip(-acc,0,1)
 
     # Apply control ここでautopilotの上書きを止めれそう！？
     act = carla.VehicleControl(throttle=float(throttle), steer=float(-steer), brake=float(brake))
-    self.ego.apply_control(act)
+    if not self.auto_exploration:
+        self.ego.apply_control(act)
+
+    # if self.auto_exploration:
+    #   if self.ego:
+    #     control = self.ego.get_control()
+    #     print(f'con: {control}')
+    #     print(f'act: {act}')
 
     self.world.tick()
 
@@ -505,9 +516,10 @@ class CarlaEnv(gym.Env):
       vehicle = self.world.try_spawn_actor(self.ego_bp, transform)
 
     if vehicle is not None:
-      self.ego=vehicle
       if self.auto_exploration:
-        self.ego.set_autopilot()
+        print('ego autopilot enabled')
+        vehicle.set_autopilot()
+      self.ego=vehicle
       return True
     else:
       print('ego spawn failed for any reason')
