@@ -368,7 +368,15 @@ class CarlaEnv(gym.Env):
     self.time_step += 1
     self.total_step += 1
 
-    return (self._get_obs(), self._get_reward(), self._terminal(), copy.deepcopy(info))
+    obs = self._get_obs()
+    reward = self._get_reward()
+    # return reward terms in obs
+    obs.update({k+'_reward': v for k, v in reward.items() if k != 'reward'})
+    reward = reward['reward']
+    terminal = self._terminal()
+    info_ = copy.deepcopy(info)
+
+    return (obs, reward, terminal, info_)
 
   def seed(self, seed=None):
     self.np_random, seed = seeding.np_random(seed)
@@ -730,7 +738,16 @@ class CarlaEnv(gym.Env):
     # cost for lateral acceleration
     r_lat = - abs(self.ego.get_control().steer) * lspeed_lon**2
 
-    r = 200*r_collision + 1*lspeed_lon + 10*r_fast + 1*r_out + r_steer*5 + 0.2*r_lat - 0.1
+    # r = 200*r_collision + 1*lspeed_lon + 10*r_fast + 1*r_out + r_steer*5 + 0.2*r_lat - 0.1
+    r = {
+      'reward': 200*r_collision + 1*lspeed_lon + 10*r_fast + 1*r_out + r_steer*5 + 0.2*r_lat - 0.1,
+      'r_collision': r_collision,
+      'lspeed_lon': lspeed_lon,
+      'r_fast': r_fast,
+      'r_out': r_out,
+      'r_steer': r_steer,
+      'r_lat': r_lat,
+    }
 
     return r
 
