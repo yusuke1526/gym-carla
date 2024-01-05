@@ -371,7 +371,7 @@ class CarlaEnv(gym.Env):
     obs = self._get_obs()
     reward = self._get_reward()
     # return reward terms in obs
-    obs.update({k+'_reward': v for k, v in reward.items() if k != 'reward'})
+    obs.update({k+'_reward': v for k, v in reward.items()})
     reward = reward['reward']
     terminal = self._terminal()
     info_ = copy.deepcopy(info)
@@ -687,11 +687,20 @@ class CarlaEnv(gym.Env):
       # Pixor state, [x, y, cos(yaw), sin(yaw), speed]
       pixor_state = [ego_x, ego_y, np.cos(ego_yaw), np.sin(ego_yaw), speed]
 
+    # get location
+    location = self.ego.get_location()
+    location = {
+      'x': location.x,
+      'y': location.y,
+      'z': location.z,
+    }
+
     obs = {
       'camera':camera.astype(np.uint8),
       'lidar':lidar.astype(np.uint8),
       'birdeye':birdeye.astype(np.uint8),
       'state': state,
+      'location': location
     }
 
     if self.pixor:
