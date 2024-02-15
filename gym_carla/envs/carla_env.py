@@ -276,7 +276,13 @@ class CarlaEnv(gym.Env):
     # Set ego information for render
     self.birdeye_render.set_hero(self.ego, self.ego.id)
 
-    return self._get_obs()
+    obs = self._get_obs()
+
+    # return reward terms in obs
+    reward = self._get_reward()
+    obs.update({k+'_reward': v for k, v in reward.items()})
+
+    return obs
   
   def _spawn_surrounding_vehicles(self):
     self.spawned_points = []
@@ -694,13 +700,20 @@ class CarlaEnv(gym.Env):
       'y': location.y,
       'z': location.z,
     }
+    velocity = self.ego.get_velocity()
+    velocity = {
+      'x': velocity.x,
+      'y': velocity.y,
+      'z': velocity.z,
+    }
 
     obs = {
       'camera':camera.astype(np.uint8),
       'lidar':lidar.astype(np.uint8),
       'birdeye':birdeye.astype(np.uint8),
       'state': state,
-      'location': location
+      'location': location,
+      'velocity': velocity,
     }
 
     if self.pixor:
