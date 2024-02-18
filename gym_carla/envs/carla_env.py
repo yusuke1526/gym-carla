@@ -276,7 +276,13 @@ class CarlaEnv(gym.Env):
     # Set ego information for render
     self.birdeye_render.set_hero(self.ego, self.ego.id)
 
-    return self._get_obs()
+    obs = self._get_obs()
+
+    # return reward terms in obs
+    reward = self._get_reward()
+    obs.update({k+'_reward': v for k, v in reward.items()})
+
+    return obs
   
   def _spawn_surrounding_vehicles(self):
     self.spawned_points = []
@@ -368,7 +374,15 @@ class CarlaEnv(gym.Env):
     self.time_step += 1
     self.total_step += 1
 
-    return (self._get_obs(), self._get_reward(), self._terminal(), copy.deepcopy(info))
+    obs = self._get_obs()
+    reward = self._get_reward()
+    # return reward terms in obs
+    obs.update({k+'_reward': v for k, v in reward.items()})
+    reward = reward['reward']
+    terminal = self._terminal()
+    info_ = copy.deepcopy(info)
+
+    return (obs, reward, terminal, info_)
 
   def seed(self, seed=None):
     self.np_random, seed = seeding.np_random(seed)
@@ -679,11 +693,27 @@ class CarlaEnv(gym.Env):
       # Pixor state, [x, y, cos(yaw), sin(yaw), speed]
       pixor_state = [ego_x, ego_y, np.cos(ego_yaw), np.sin(ego_yaw), speed]
 
+    # get location
+    location = self.ego.get_location()
+    location = {
+      'x': location.x,
+      'y': location.y,
+      'z': location.z,
+    }
+    velocity = self.ego.get_velocity()
+    velocity = {
+      'x': velocity.x,
+      'y': velocity.y,
+      'z': velocity.z,
+    }
+
     obs = {
       'camera':camera.astype(np.uint8),
       'lidar':lidar.astype(np.uint8),
       'birdeye':birdeye.astype(np.uint8),
       'state': state,
+      'location': location,
+      'velocity': velocity,
     }
 
     if self.pixor:
@@ -730,7 +760,16 @@ class CarlaEnv(gym.Env):
     # cost for lateral acceleration
     r_lat = - abs(self.ego.get_control().steer) * lspeed_lon**2
 
-    r = 200*r_collision + 1*lspeed_lon + 10*r_fast + 1*r_out + r_steer*5 + 0.2*r_lat - 0.1
+    # r = 200*r_collision + 1*lspeed_lon + 10*r_fast + 1*r_out + r_steer*5 + 0.2*r_lat - 0.1
+    r = {
+      'reward': 200*r_collision + 1*lspeed_lon + 10*r_fast + 1*r_out + r_steer*5 + 0.2*r_lat - 0.1,
+      'r_collision': r_collision,
+      'lspeed_lon': lspeed_lon,
+      'r_fast': r_fast,
+      'r_out': r_out,
+      'r_steer': r_steer,
+      'r_lat': r_lat,
+    }
 
     return r
 
